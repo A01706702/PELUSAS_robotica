@@ -15,7 +15,9 @@ class Bug0():
 
         self.lidar_received = False #flag to indicate if the laser scan has been received 
         self.target_position_tolerance = 0.15 #target position tolerance [m] 
-        fw_distance = 0.30 # distance  [m] 
+        fw_distance = 0.38 # distance  [m]
+        w_distance = 0.25
+        self.avoid = 0
 
         self.v_msg = Twist() #Robot's desired speed
         self.ed_msg = Float32()
@@ -24,6 +26,7 @@ class Bug0():
 
         self.x_msg, self.y_msg = 0.0, 0.0
         self.targetx_msg, self.targety_msg = 0.0, 0.0
+        self.theta_ant = 0.0
          
         self.current_state = 'GoToGoal' #Robot's current state 
         
@@ -60,8 +63,6 @@ class Bug0():
                 closest_range, closest_angle = self.get_closest_object(self.lidar_msg) #get the closest object range and angle
                 self.closest_ang = closest_angle
 
-                print("estoy jalando pa")
-
                 v_gtg  = self.gtg_msg.linear.x
                 w_gtg  = self.gtg_msg.angular.z
                 err_d = self.ed_msg.data
@@ -86,7 +87,7 @@ class Bug0():
                         self.current_state = 'GoToGoal'
                     else:
 
-                        v_fw, w_fw = self.compute_follow_walls(self.closest_ang) 
+                        v_fw, w_fw = self.compute_follow_walls(self.closest_ang, closest_range, fw_distance, w_distance) 
                         self.v_msg.linear.x = v_fw 
                         self.v_msg.angular.z = w_fw
                         err_d = self.ed_msg.data
@@ -100,20 +101,24 @@ class Bug0():
 
                 print("State: ", self.current_state)
                 print("Distance to objetive: ", err_d)
+                print("Velocidad lineal: ", self.v_msg.linear.x)
+                print("Velocidad angular: ", self.v_msg.angular.z)
                 print("Closest Angle: ", closest_angle)
                 print("Closest Range: ", closest_range)
             
-            self.pub_cmd_vel.publish(self.v_msg)  
+            self.pub_cmd_vel.publish(self.v_msg)
+            self.avoid = 0
             rate.sleep()  
      
     def at_goal(self): 
         return np.sqrt((self.xf-self.x_act)**2+(self.yf-self.y_act)**2)<self.target_position_tolerance
     
     def ObstacleCleared(self, fw_dist, closest_rang): 
-        return closest_rang > fw_dist
-    
+            return closest_rang > fw_dist
+
     def NearToObstacle(self, fw_dist, closest_rang):
-        return closest_rang < fw_dist
+        if (closest_rang < fw_dist):
+            return closest_rang < fw_dist
     
     def get_closest_object(self, lidar_msg): 
 
@@ -124,7 +129,8 @@ class Bug0():
         closest_angle = np.arctan2(np.sin(closest_angle), np.cos(closest_angle)) 
         return closest_range, closest_angle 
     
-    def compute_follow_walls(self, closest_angle):
+    def compute_follow_walls(self, closest_angle, closest_range, fw_distance, w_distance):
+        
         theta = closest_angle
         theta = np.arctan2(np.sin(theta),np.cos(theta))
 
@@ -135,9 +141,14 @@ class Bug0():
         theta_fwcc = np.arctan2(np.sin(the_fwcc),np.cos(the_fwcc))
         
         kw = 1.6
-        v_fw = 0.12
+        v_fwcc = 0.13
+
+        if closest_range<w_distance:
+            kw = 2 - 0.4*(closest_range/w_distance)
+            v_fwcc = 0.1 * (closest_range/w_distance)
+
         w_fwcc = kw*theta_fwcc
-        return v_fw, w_fwcc
+        return v_fwcc, w_fwcc
      
     def laser_cb(self, msg):    
         self.lidar_msg = msg  
