@@ -14,14 +14,17 @@ class TransformFiducial():
     def __init__(self): 
         rospy.Subscriber("fiducial_transforms", FiducialTransformArray, self.fiducial_cb)
         self.Fiducial = FiducialTransformArray()
+        self.arucoflagid_pub = rospy.Publisher("Aruco_flag_ID", Point, queue_size=1) #aruco pos wrt origin
         self.arucopos_pub = rospy.Publisher("Aruco_pos_in_world", Point, queue_size=1) #aruco pos wrt origin
         self.coords_pub = rospy.Publisher("Aruco_pos_real", Point, queue_size=1) # aruco pos wrt robot center
         self.zetaKF_pub = rospy.Publisher("ZetaKF", Point, queue_size=1) # Z for kalman filter
         
+        self.arucoflagid = Point() # flag, ID, 0
         self.coords_orig = Point() #coords wrt origin
         self.coords = Point() #coords wrt robot center
         self.Zeta = Point() #Z para KF (Z = [e, theta])
         self.received_fiducial = 0
+        self.aruco_detected = 0
         rate = rospy.Rate(10)
 
         self.pos_x = 0.0
@@ -61,11 +64,14 @@ class TransformFiducial():
         }
 
         while not rospy.is_shutdown():
+            print "\nHay aruco??: ", self.aruco_detected
             if self.received_fiducial:
                 self.received_fiducial = 0
                 self.only_transforms = self.Fiducial.transforms #el mensaje es muy largo y aqui lo reducimos a solo las transformadas que tiene como tipo una lista
-                #aqui se reduce el mensaje a solo el ID
+                
                 if len(self.only_transforms) != 0:
+                    self.aruco_detected = 1
+                    #aqui se reduce el mensaje a solo el ID
                     if self.only_transforms[0].fiducial_id == 117: #if fiducial_id = 117
                         print ("Estas en el primer aruco (%s)\n" % self.only_transforms[0].fiducial_id)
                         self.msg_y_calculos()
@@ -107,21 +113,25 @@ class TransformFiducial():
                     
                     else:
                         print("no es correcto")
-                        # self.aruco_ID = 0.0
+                        self.aruco_ID = self.only_transforms[0].fiducial_id
+                        # self.arucoflagid.x, self.arucoflagid.y, self.arucoflagid.z = self.aruco_detected, 0.0, 0.0
+                        # self.arucoflagid_pub.publish(self.arucoflagid)
 
-                    self.coords.x, self.coords.y, self.coords.z = self.X_aruco, self.Y_aruco, 0
+                    self.coords.x, self.coords.y, self.coords.z = self.X_aruco, self.Y_aruco, 0.0
                     self.Zeta.x, self.Zeta.y, self.Zeta.z = self.error, self.theta, 0
-                    self.coords_orig.x, self.coords_orig.y, self.coords_orig.z = self.X_aruco_orig, self.Y_aruco_orig, self.aruco_ID
-
+                    self.coords_orig.x, self.coords_orig.y, self.coords_orig.z = self.X_aruco_orig, self.Y_aruco_orig, 0.0
+                    self.arucoflagid.x, self.arucoflagid.y, self.arucoflagid.z = self.aruco_detected, self.aruco_ID, 0.0
+                    
+                    self.arucoflagid_pub.publish(self.arucoflagid)
                     self.coords_pub.publish(self.coords) # X Y 0 wrt robot
                     self.zetaKF_pub.publish(self.Zeta) # Z para KF (Z = [e, theta])
                     self.arucopos_pub.publish(self.coords_orig) # X, Y, FrameID (wrt origin)
-                    # self.only_transforms[0].fiducial_id = 0.0
                 else:
-                    print("no hay nada")                 
-                    self.coords_orig.x, self.coords_orig.y, self.coords_orig.z = 0.0, 0.0, 0.0
-                    self.arucopos_pub.publish(self.coords_orig)
-
+                    print("no hay nada")
+                    self.aruco_detected = 0
+                    self.arucoflagid.x, self.arucoflagid.y, self.arucoflagid.z = self.aruco_detected, 0.0, 0.0
+                    self.arucoflagid_pub.publish(self.arucoflagid)
+                    
             rate.sleep()
 
     def msg_y_calculos(self):
