@@ -15,8 +15,8 @@ class Bug0():
 
         self.lidar_received = False #flag to indicate if the laser scan has been received 
         self.target_position_tolerance = 0.15 #target position tolerance [m] 
-        fw_distance = 0.38 # distance  [m]
-        w_distance = 0.25
+        fw_distance = 0.36 # distance  [m]
+        w_distance = 0.32
         self.avoid = 0
 
         self.v_msg = Twist() #Robot's desired speed
@@ -140,12 +140,12 @@ class Bug0():
         the_fwcc = np.pi/2 + theta_ao
         theta_fwcc = np.arctan2(np.sin(the_fwcc),np.cos(the_fwcc))
         
-        kw = 1.6
+        kw = 1.5
         v_fwcc = 0.13
 
         if closest_range<w_distance:
-            kw = 2 - 0.4*(closest_range/w_distance)
-            v_fwcc = 0.1 * (closest_range/w_distance)
+            kw = 1.8 - 0.7*(closest_range/w_distance)
+            v_fwcc = 0.13 * (closest_range/w_distance)
 
         w_fwcc = kw*theta_fwcc
         return v_fwcc, w_fwcc

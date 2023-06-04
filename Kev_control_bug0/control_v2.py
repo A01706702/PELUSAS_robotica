@@ -31,25 +31,50 @@ class RobotControl():
         self.Dv_diff, self.Dw_diff = 0.0, 0.0
 
         self.x_target = 2 #x position of the goal 
-        self.y_target = 9 #y position of the goal 
+        self.y_target = 8 #y position of the goal 
 
         self.goal_received = 0 #flag to indicate if the goal has been received 
 
-        self.wr = 0.0
-        self.wl = 0.0
-        self.wr_n = 0.0
-        self.wl_n = 0.0
+        self.wr, self.wl = 0.0, 0.0
+        self.wr_n, self.wl_n = 0.0, 0.0
 
-        #DeadReckoning
-        self.miu_1 = 0.0
-        self.sigma_1 = 0.0
-        self.H_1 = 0.0
+        self.errorKF, self.thetaKF = 0.0, 0.0
 
-        #DataDeadReckoning
-        #Datos
-        self.miu_ant = [0.0,0.0,0.0] #Anterior
-        sigma_ant = np.zeros([3,3]) #Anterior
-        self.Q = np.zeros([3,3])
+        ########################## Filtro de Kalman ##########################
+        # self.M = {
+        #     "117": [0.716661, -2.015600],
+        #     "217": [-2.015600, -2.779200],
+        #     "317": [4.960400, 0.496495],
+        #     "417": [6.432060, -5.704600],
+        #     "517": [8.999960, -1.664390]
+        # }
+
+        self.miu_ant = [0.0,0.0,0.0] # Anterior
+        sigma_ant = np.zeros([3,3]) # Anterior
+        self.Q = np.zeros([3,3]) # Ruido sensores
+        self.Rk = np.array([[0.1,0],    # Ruido ambiente
+                            [0, 0.02]])
+
+        self.Miu_hat = np.array([0.0, 0.0, 0.0]) #Sk contains Sx, Sy and Stheta but starts in zeroes.
+        self.Sigma_hat = 0.0
+        self.Hk = 0.0
+
+        self.Sxk_ant, self.Syk_ant, self.Stheta_ant = 0.0, 0.0, 0.0
+        self.E_w = [] 
+        self.E_s = []
+        
+        self.dx, self.dy, self.p = 0.0, 0.0, 0.0
+        self.mx, self.my = 0.0, 0.0
+        self.ar_x, self.ar_y = 0.0, 0.0
+
+        self.I = np.identity(3)
+        self.Gk = np.array([[0, 0, 0], [0, 0, 0]])
+        self.Mk = np.zeros([3,3])
+        self.SigmaK = np.zeros([3,3])
+
+        self.Zk = []
+        self.e_Zhat = 0.0
+        self.t_Zhat = 0.0
 
         self.current_state = 'Moving Robot' #Robot's current state 
         
@@ -67,7 +92,9 @@ class RobotControl():
 
         rospy.Subscriber("wl", Float32, self.wl_cb)  
         rospy.Subscriber("wr", Float32, self.wr_cb)
-        #rospy.Subscriber("Aruco_pos_real", Point, self.aruco_cb)
+        rospy.Subscriber("Aruco_pos_real", Point, self.aruco_cb)
+        rospy.Subscriber("ZetaKF", Point, self.zetaKF_cb)
+
 
         #********** INIT NODE **********###
         freq = 50 
@@ -103,8 +130,8 @@ class RobotControl():
             # kd = kd_max * ((1.0-np.exp(-alpha*(abs(ed))**2))/(abs(ed)))
             # kt = 0.7 #kw
 
-            P, I = 0.05, 0.0000005
-            P2, I2 = 0.3, 0.000001
+            P, I = 0.03, 0.0000008
+            P2, I2 = 0.5, 0.000001
             
             # P
             self.Pv = P * ed
@@ -165,25 +192,12 @@ class RobotControl():
         H_1 = np.array([[1, 0.0, -(dt*v*np.sin(self.miu_ant[2]))],
                         [0, 1, dt*v*np.cos(self.miu_ant[2])],
                         [0, 0, 1]], dtype = float)
+        
+        self.get_noise()
 
         #Step 3
         aux1 = np.dot(H_1, sigma_ant)
         self.sigma_1 = np.dot(aux1, np.transpose(H_1))+self.Q
-
-        # Nondeterministic error matrix
-        kr = 0.01
-        kl = 0.01
-
-        if dt != 0:
-
-            E_s = [[kr*abs(self.wr),0],
-                    [0,kl*abs(self.wl)]]
-
-            E_w = (1/(2*self.r*dt))*np.array([[np.cos(self.miu_ant[2]),np.cos(self.miu_ant[2])],
-                                [np.sin(self.miu_ant[2]),np.sin(self.miu_ant[2])],
-                                [2/self.L,-2/self.L]])
-
-            self.Q = E_w.dot(E_s).dot(np.transpose(E_w))
 
         # Calculate Covariance Matrix Sigma
         Sigma_pose = np.zeros([3,3]) #Creates the Covariance matrix (3x3) for x, y and theta
@@ -234,6 +248,96 @@ class RobotControl():
         odom.twist.twist.angular.z = w
 
         return odom
+    
+    def get_noise(self):
+        # Nondeterministic error matrix
+        self.kr = 0.02
+        self.kl = 0.02
+
+        self.E_s = [[self.kr * abs(self.wr), 0],
+                   [0, self.kl * abs(self.wl)]]
+
+        self.E_w = (1 / (2 * self.r * self.dt)) * np.array([[np.cos(self.Stheta_ant), np.cos(self.Stheta_ant)],
+                                                            [np.sin(self.Stheta_ant), np.sin(self.Stheta_ant)],
+                                                            [2 / self.L, -2 / self.L]])
+
+        self.Q = self.E_w.dot(self.E_s).dot(np.transpose(self.E_w))
+
+        return self.Q
+    
+    def predict_pose(self, v, w): 
+
+        self.Sxk_ant = self.sk[0]
+        self.Syk_ant = self.sk[1]
+        self.Stheta_ant = self.sk[2]
+        
+        self.motion_model( v, w)
+
+        self.Hk = np.array([[1, 0, -self.dt * self.vk * np.sin(self.Stheta_ant)],
+                            [0, 1, self.dt * self.vk * np.cos(self.Stheta_ant)],
+                            [0, 0, 1]])
+        
+        self.get_noise()
+
+        self.P = np.dot(np.dot(self.Hk, self.SigmaK), self.Hk.T) + self.Q #Double dot multiplication of the 3x3 matrixes. Finally we add the noise covariance matrix
+
+        self.dx = self.mx - self.Sxk_act
+        self.dy = self.my - self.Syk_act
+        self.pg = ((self.dx)**2) + ((self.dy)**2)
+
+        self.Zeta_KF_vini = [self.Z11[self.i][0], self.Z11[self.i][1]]
+        self.Zeta_KF_vini = np.transpose(self.Zeta_KF_vini) #Z normal
+        
+        self.error_Zik = np.sqrt(((self.dx)**2) + ((self.dy)**2)) #z hat
+        self.theta_Zik = (np.arctan2(self.dy, self.dx))-self.Stheta_act
+        self.Zik = [self.error_Zik, self.theta_Zik]
+        self.Zik = np.transpose(self.Zik)
+
+        self.Gk = [[-(self.dx) / np.sqrt(self.pg), -(self.dy) / np.sqrt(self.pg), 0],
+                    [(self.dy) / self.pg, -(self.dx) / self.pg, -1]]
+
+        self.Gk = np.array(self.Gk)
+        self.P = np.array(self.P)
+        self.Zk = self.Gk.dot(self.P).dot(np.transpose(self.Gk))+self.Rk
+
+        self.Kk = self.P.dot(np.transpose(self.Gk)).dot(np.linalg.inv(self.Zk))
+
+        self.Mk = [self.Sxk_act, self.Syk_act, self.Stheta_act] + (self.Kk.dot((self.Zeta_KF_vini - self.Zik)))
+
+        self.SigmaK = (self.I - self.Kk.dot(self.Gk)).dot(self.P)
+
+        #Update next iteration
+        self.sk[0] = self.Mk[0]
+        self.sk[1] = self.Mk[1]
+        self.sk[2] = self.Mk[2]
+
+        return self.Mk, self.SigmaK
+    
+    def motion_model(self, v, w):
+        self.Sxk_act = self.Sxk_ant + self.dt * v * np.cos(self.Stheta_ant) 
+        self.Syk_act = self.Syk_ant + self.dt * v * np.sin(self.Stheta_ant) 
+        self.Stheta_act = self.Stheta_ant + self.dt * w
+
+        return self.Sxk_act, self.Syk_act, self.Stheta_act
+
+    def aruco_cb(self, coordis):
+        self.ar_x = coordis.x
+        self.ar_y = coordis.y
+
+    def zetaKF_cb(self, zeta):
+        self.errorKF = zeta.x
+        self.thetaKF = zeta.y
+
+    def motion_model(self, vk, wk):
+        Sxk_act = self.Sxk_ant + self.dt * vk * np.cos(self.Stheta_ant) 
+        Syk_act = self.Syk_ant + self.dt * vk * np.cos(self.Stheta_ant) 
+        Stheta_act = self.Stheta_ant + self.dt * wk
+
+        self.Sxk_ant = Sxk_act
+        self.Syk_ant = Syk_act
+        self.Stheta_ant = Stheta_act
+
+        return self.Sxk_ant, self.Syk_ant, self.Stheta_ant
 
     def wl_cb(self, wl):  
         self.wl = wl.data 
